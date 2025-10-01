@@ -17,6 +17,10 @@
 #cursor>i{position:absolute;inset:0;border:2px solid #9AF700;border-radius:50%;box-shadow:0 0 10px rgba(154,247,0,.85)}
 #cursor.down>i{background:#9AF700}#glyph{position:absolute;left:50%;top:50%;transform:translate(-50%,-52%);font:10px ui-monospace,monospace;color:#0b111b}
 #menu{position:absolute;right:8px;top:8px;bottom:8px;width:176px;display:flex;flex-direction:column;gap:8px;z-index:11}
+#permPrompt{position:absolute;inset:0;background:rgba(6,8,14,.92);display:none;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:24px;text-align:center;z-index:20;border:1px solid rgba(23,32,48,.9);box-shadow:var(--shadow)}
+#permPrompt h2{margin:0;font-size:14px;letter-spacing:.5px;text-transform:uppercase;color:#f0f6ff}
+#permPrompt p{margin:0;font-size:11px;line-height:1.5;color:#c7cfdb;max-width:min(420px,80vw)}
+#permPrompt .btn{min-width:160px}
 #brand,aside{background:var(--panel);border:1px solid var(--border);box-shadow:var(--shadow)}
 #brand{padding:6px;text-align:center;font-weight:900;letter-spacing:.6px;text-transform:uppercase}
 aside{padding:8px;display:flex;flex-direction:column;gap:8px;text-transform:uppercase}
@@ -50,6 +54,11 @@ input[type=range]{flex:1;min-width:0}
   <button id="codeBtn" class="btn">CODE</button>
   <div id="hud"></div>
   <div id="diag">Booting… (localhost)</div>
+  <div id="permPrompt" role="dialog" aria-modal="true" aria-labelledby="permTitle" aria-live="polite">
+    <h2 id="permTitle">Enable Camera</h2>
+    <p id="permMsg">Tap “Enable Camera” so Safari can ask for access.</p>
+    <button id="enableCam" class="btn primary">Enable Camera</button>
+  </div>
   <div id="menu">
     <div id="brand">DRAW 2</div>
     <aside>
@@ -86,9 +95,16 @@ input[type=range]{flex:1;min-width:0}
 const $=s=>document.querySelector(s), $$=s=>Array.from(document.querySelectorAll(s));
 const video=$("#video"), cv=$("#cv"), ctx=cv.getContext("2d",{willReadFrequently:true});
 const dbg=$("#dbg"), dctx=dbg.getContext("2d");
-const cursor=$("#cursor"), glyph=$("#glyph"), diag=$("#diag"), codeBtn=$("#codeBtn"), flash=$("#flash"), hud=$("#hud");
+const cursor=$("#cursor"), glyph=$("#glyph"), diag=$("#diag"), codeBtn=$("#codeBtn"), flash=$("#flash"), hud=$("#hud"), permPrompt=$("#permPrompt"), permMsg=$("#permMsg"), enableCam=$("#enableCam");
 function log(m){ const t=new Date().toLocaleTimeString(); diag.textContent="["+t+"] "+m+"\\n"+diag.textContent.split("\\n").slice(0,160).join("\\n"); }
 codeBtn.onclick=()=>{ const on = diag.style.display!=="block"; diag.style.display = on? "block":"none"; dbg.style.display = on? "block":"none"; hud.style.display = on? "block":"none"; };
+
+function showPermPrompt(message, buttonDisabled){ if(!permPrompt) return; permPrompt.style.display="flex"; if(message) permMsg.textContent=message; if(enableCam){ enableCam.disabled=!!buttonDisabled; enableCam.classList.toggle("primary", !buttonDisabled); } }
+function hidePermPrompt(){ if(!permPrompt) return; permPrompt.style.display="none"; }
+showPermPrompt("Tap \"Enable Camera\" so Safari can ask for access.");
+if(enableCam) enableCam.onclick=(e)=>{ e.preventDefault(); startCamera({fromUser:true, manual:true}); };
+
+let camReady=false;
 
 /* Palette */
 const colors=["#ffffff","#f3f4f6","#e5e7eb","#d1d5db","#9ca3af","#6b7280","#111827","#000000","#ffedd5","#fdba74","#fb923c","#f97316","#ea580c","#c2410c","#fef9c3","#fde047","#facc15","#eab308","#a16207","#dcfce7","#bbf7d0","#86efac","#22c55e","#16a34a","#cffafe","#a5f3fc","#67e8f9","#06b6d4","#0891b2","#dbeafe","#bfdbfe","#93c5fd","#3b82f6","#1d4ed8","#e9d5ff","#d8b4fe","#c084fc","#a855f7","#7c3aed","#fecdd3","#fda4af","#fb7185","#ef4444","#b91c1c"];
@@ -302,8 +318,34 @@ async function ensureHands(){ if(hands) return hands;
   return hands;
 }
 
-async function startCamera(){
-  if(starting) return; starting=true;
+async function startCamera(opts){
+  opts=opts||{}; const fromUser=!!opts.fromUser;
+  if(camReady){ hidePermPrompt(); return; }
+  if(starting) return;
+  if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+    log("Camera API not available.");
+    showPermPrompt("This browser does not support camera access. Please try a different browser.", true);
+    return;
+  }
+  let permState=null;
+  if(navigator.permissions && navigator.permissions.query){
+    try{
+      const status=await navigator.permissions.query({name:"camera"});
+      permState=status.state;
+      const onPermChange=()=>{ if(status.state==="granted" && !camReady){ startCamera({fromUser:true}); } };
+      if("onchange" in status){
+        try{ status.onchange=onPermChange; }
+        catch(_err){ status.addEventListener && status.addEventListener("change", onPermChange); }
+      }
+    }catch(_e){ permState=null; }
+  }
+  if(!fromUser && permState && permState!=="granted"){
+    log("Waiting for user gesture before requesting camera ("+permState+").");
+    showPermPrompt(permState==="denied"?"Camera access is blocked. Enable it in Settings > Safari > Camera, then reload.":"Tap \"Enable Camera\" so Safari can ask for access.");
+    return;
+  }
+  starting=true;
+  showPermPrompt("Requesting camera access…", true);
   try{
     log("Requesting camera…");
     const cs={video:{facingMode:"user",width:{ideal:1280},height:{ideal:720}},audio:false};
@@ -328,13 +370,23 @@ async function startCamera(){
         log("Restored normal thresholds.");
       }
     })();
+    camReady=true;
+    hidePermPrompt();
     log("Hands running.");
-  }catch(e){ log("Start failed: "+(e&&e.message?e.message:String(e))); }
+  }catch(e){
+    const deniedMsg=fromUser?"Camera access was denied. Enable it in Settings and reload, then tap Enable Camera again.":"Safari needs you to tap Enable Camera before it can ask for permission.";
+    const msg=e&&e.name==="NotAllowedError"?deniedMsg:e&&e.name==="NotFoundError"?"No camera was found on this device.":"Could not start the camera ("+(e&&e.message?e.message:String(e))+" ).";
+    showPermPrompt(msg, false);
+    log("Start failed: "+(e&&e.message?e.message:String(e)));
+  }
   finally{ starting=false; }
 }
-window.addEventListener("pointerdown", startCamera, {capture:true});
-window.addEventListener("keydown", startCamera, {capture:true});
-setTimeout(startCamera, 200);
+const userGestureStart=()=> startCamera({fromUser:true});
+window.addEventListener("pointerdown", userGestureStart, {capture:true});
+window.addEventListener("touchstart", userGestureStart, {capture:true});
+window.addEventListener("click", userGestureStart, {capture:true});
+window.addEventListener("keydown", userGestureStart, {capture:true});
+setTimeout(()=>startCamera({fromUser:false}), 200);
 
 /* Clear */
 document.querySelector('#clear').onclick=()=>{ pushH(); ctx.clearRect(0,0,cv.width,cv.height); };
